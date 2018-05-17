@@ -100,6 +100,6 @@ def get_wepp(folder):
 
         if fbase.upper() == 'ALLUNITS':
             if ext == 'csv':
-                return pd.read_csv(file)
+                return pd.read_csv(file, encoding='latin1')
             elif ext == 'xls' or 'xlsx':
-                return pd.read_excel(file)
+                return pd.read_excel(file,encoding='latin1')
