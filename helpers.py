@@ -96,7 +96,7 @@ def get_wepp(folder):
         directory, fname = os.path.split(file)
         ext = fname.split('.')[-1]
         fbase = fname.split('.')[0]
-        print ext, fbase
+        #print ext, fbase
 
         if fbase.upper() == 'ALLUNITS':
             if ext == 'csv':
