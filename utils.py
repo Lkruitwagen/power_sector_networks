@@ -177,6 +177,7 @@ def make_null_model(iso_slice_plants, years):
     extra_plants = {}
     epsilons = {}
     new_plants = {}
+    reso = {}
 
     for y in years[1:]:
     
@@ -213,7 +214,7 @@ def make_null_model(iso_slice_plants, years):
         #print iso_slice_plants[y].ix[new_plants].loc[iso_slice_plants[y].ix[new_plants].blue==True]
         #print Pr_green, Pr_blue, Pr_ff
     
-        reso = {}
+        reso[y] = {}
     
         #use full population for size of asset
         #print 'green, blue, ff plants', (iso_slice_plants[y-1].green==True).sum(), (iso_slice_plants[y-1].blue==True).sum(), (iso_slice_plants[y].ff==True).sum() 
@@ -221,9 +222,9 @@ def make_null_model(iso_slice_plants, years):
         #reso['b'] = s.exponweib.fit(iso_slice_plants[y-1][iso_slice_plants[y-1].blue==True].MW.values,floc=0, fa=1)
         #reso['f'] = s.exponweib.fit(iso_slice_plants[y-1][iso_slice_plants[y-1].ff==True].MW.values,floc=0, fa=1)
     
-        reso['g'] = s.exponweib.fit(iso_slice_plants[y].ix[new_plants[y]].loc[iso_slice_plants[y].ix[new_plants[y]].green==True].MW.values)#,floc=0, fa=1)
-        reso['b'] = s.exponweib.fit(iso_slice_plants[y].ix[new_plants[y]].loc[iso_slice_plants[y].ix[new_plants[y]].blue==True].MW.values)#,floc=0, fa=1)
-        reso['f'] = s.exponweib.fit(iso_slice_plants[y].ix[new_plants[y]].loc[iso_slice_plants[y].ix[new_plants[y]].ff==True].MW.values)#,floc=0, fa=1)
+        reso[y]['g'] = s.exponweib.fit(iso_slice_plants[y].ix[new_plants[y]].loc[iso_slice_plants[y].ix[new_plants[y]].green==True].MW.values)#,floc=0, fa=1)
+        reso[y]['b'] = s.exponweib.fit(iso_slice_plants[y].ix[new_plants[y]].loc[iso_slice_plants[y].ix[new_plants[y]].blue==True].MW.values)#,floc=0, fa=1)
+        reso[y]['f'] = s.exponweib.fit(iso_slice_plants[y].ix[new_plants[y]].loc[iso_slice_plants[y].ix[new_plants[y]].ff==True].MW.values)#,floc=0, fa=1)
     
         new_assets[y] = []
     
@@ -231,7 +232,7 @@ def make_null_model(iso_slice_plants, years):
     
         while NEW_MW<=ADD_MW:
             c = np.random.choice(['g','b','f'],p=np.array([Pr_green,Pr_blue,Pr_ff])/np.sum([Pr_green,Pr_blue,Pr_ff]))
-            MW = s.exponweib.rvs(*reso[c],size=1)[0]
+            MW = s.exponweib.rvs(*reso[y][c],size=1)[0]
             new_assets[y].append({'color':c, 'MW':MW})
             NEW_MW +=MW
         
@@ -320,7 +321,7 @@ def make_null_model(iso_slice_plants, years):
         for p in extra_plants[y]:
             null_df[y] = null_df[y].append(iso_slice_plants[y].ix[p])
             
-    return null_df, retired_plants, new_plants, extra_plants, epsilons
+    return null_df, retired_plants, new_plants, extra_plants, epsilons, reso
     
 def get_stats(df, years):
     genned_stats = {
