@@ -1,5 +1,7 @@
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
+from matplotlib.patches import Wedge
+from matplotlib.collections import PatchCollection
 import networkx as nx
 import random, math, glob, os, pickle, time, copy, ternary
 import pandas as pd
@@ -8,6 +10,7 @@ import scipy.stats as s
 import numpy as np
 from PIL import Image
 from sklearn import linear_model
+from sklearn.cluster import KMeans
 from helpers import *
 from scipy.optimize import minimize, curve_fit
 from scipy.misc import factorial
@@ -20,8 +23,8 @@ def prep_wepp(wepp_df):
     #print '~~~~~~ GENERATING DF ~~~~~~~'
     #print 'loading df...'
     df_iso = pd.read_csv('country_ISO_update.csv')
-    fuel_class = 'fuel_classification_database.dta'
-    df_fuel_class = pd.io.stata.read_stata(fuel_class)
+    #fuel_class = 'fuel_classification_database.dta'
+    df_fuel_class = pd.read_csv('fuel_class_db.csv')
     heat_rates_xls = 'Heat rates_v3.xls'
     df_heatrates = pd.read_excel(heat_rates_xls, sheet_name='CSV_output')
     df_load_factor = pd.io.stata.read_stata('load_factor_database.dta')
@@ -40,6 +43,8 @@ def prep_wepp(wepp_df):
     
     #fix fuel classes
     wepp_df = wepp_df.merge(df_fuel_class, on='FUEL', how='left')
+    
+    #print wepp_df[pd.isnull(wepp_df.FUEL)]
     df_wepp_em_fact = pd.read_csv('wepp_em_fact.csv')
 
     #merge emissions factors
@@ -113,7 +118,7 @@ def prep_wepp(wepp_df):
     #sort WEPP
     wepp_df.sort_values('CCCE', inplace=True, ascending=False)
 
-    wepp_df['green']=wepp_df.fuel_class.isin(['SUN','BIOGAS','WASTE','BIOOIL','WIND','BIOMASS','GEOTHERMAL'])
+    wepp_df['green']=wepp_df.fuel_class.isin(['SUN','BIOGAS','BIOOIL','WIND','BIOMASS','GEOTHERMAL'])
     wepp_df['green_MW'] = wepp_df.MW*wepp_df.green
     wepp_df['blue']=wepp_df.fuel_class.isin(['WATER','NUCLEAR'])
     wepp_df['blue_MW'] = wepp_df.MW*wepp_df.blue
@@ -121,7 +126,7 @@ def prep_wepp(wepp_df):
     wepp_df['solar_MW'] = wepp_df.MW*wepp_df.solar
     wepp_df['wind']=wepp_df.fuel_class.isin(['WIND'])
     wepp_df['wind_MW'] = wepp_df.MW*wepp_df.wind
-    wepp_df['ff']=~wepp_df.fuel_class.isin(['SUN','BIOGAS','WASTE','BIOOIL','WIND','BIOMASS','GEOTHERMAL','WATER','NUCLEAR'])
+    wepp_df['ff']=~wepp_df.fuel_class.isin(['SUN','BIOGAS','BIOOIL','WIND','BIOMASS','GEOTHERMAL','WATER','NUCLEAR'])
     wepp_df['ff_MW'] = wepp_df.MW*wepp_df.ff
     
     return wepp_df
@@ -132,16 +137,25 @@ def prep_iso_slices(wepp_df, select_iso):
     #group the units by plant, add the 
     prep_slice_plants = prep_slice[['PLANT','COMPANY']].groupby(['PLANT']).agg(lambda x:x.value_counts().index[0])
 
-    prep_slice.loc[pd.isnull(prep_slice.fuel_class),['fuel_class']]='OIL'
+    #print prep_slice.loc[pd.isnull(prep_slice.fuel_class)]
 
-    prep_slice_plants['fuel_class'] = prep_slice[['PLANT','fuel_class']].groupby(['PLANT']).agg(lambda x:x.value_counts().index[0])
+    prep_slice_plants['fuel_class'] = prep_slice[['PLANT','fuel_class','MW']].sort_values('MW', ascending=False).groupby(['PLANT']).nth(0).fuel_class#.agg(lambda x:x.value_counts().index[0])
     prep_slice_plants['YEAR'] = prep_slice[['PLANT','YEAR']].groupby(['PLANT']).mean()
-
-    for c in ['green','blue','solar','wind','ff']:
-        prep_slice_plants[c] = prep_slice[['PLANT',c]].groupby(['PLANT']).agg(lambda x:x.value_counts().index[0])
 
     for c in ['MW','CCCE','green_MW','blue_MW','solar_MW','wind_MW','ff_MW']:
         prep_slice_plants[c] = prep_slice[['PLANT',c]].groupby(['PLANT']).sum()
+        
+    prep_slice_plants['solar'] = prep_slice[['PLANT','solar_MW']].groupby(['PLANT']).sum()>10**-4
+    prep_slice_plants['wind'] = prep_slice[['PLANT','wind_MW']].groupby(['PLANT']).sum()>10**-4
+    #print prep_slice_plants[['green_MW','blue_MW','ff_MW']].idxmax(axis=1)
+    prep_slice_plants['green'] = prep_slice_plants[['green_MW','blue_MW','ff_MW']].idxmax(axis=1)=='green_MW'
+    prep_slice_plants['blue'] = prep_slice_plants[['green_MW','blue_MW','ff_MW']].idxmax(axis=1)=='blue_MW'
+    prep_slice_plants['ff'] = prep_slice_plants[['green_MW','blue_MW','ff_MW']].idxmax(axis=1)=='ff_MW'
+        
+    #for c in ['green','blue','solar','wind','ff']:
+    #    prep_slice_plants[c] = prep_slice[['PLANT',c]].groupby(['PLANT']).agg(lambda x:x.value_counts().index[0])
+
+    
     
     prep_slice_meta = prep_slice_plants[['COMPANY','MW']].groupby(['COMPANY']).sum()
     prep_slice_meta['COUNT'] = prep_slice_plants[['COMPANY','MW']].groupby(['COMPANY']).count()
@@ -433,7 +447,623 @@ def plot_stats(truth_stats, synth_stats, null_1_stats, years):
     plt.show()
     return 0
 
-def plot_DD(iso_slice_plants, null_df, synthetic_df, years, MW = False):
+
+def draw_all_components(df_1yr, MW=False, N_GT=3):
+    if MW:
+        all_cos = df_1yr[['COMPANY','MW']].groupby('COMPANY').filter(lambda x: x['MW'].count()>N_GT).groupby('COMPANY').sum().sort_values('MW',ascending=False).index.values
+        
+    else:
+        all_cos = df_1yr[['COMPANY','MW']].groupby('COMPANY').filter(lambda x: x['MW'].count()>N_GT).groupby('COMPANY').count().sort_values('MW',ascending=False).index.values
+        
+    #print len(all_cos)
+    fig, axs = plt.subplots(int(len(all_cos)/ 10) +1,10,figsize=(16,(int(len(all_cos)/ 10) +1 )*1.5), dpi=100, sharex=True, sharey=True)
+    ii=0
+    jj=0
+
+    for c in all_cos:
+        slice_company = df_1yr.loc[df_1yr['COMPANY']==c]
+        #print slice_company
+
+        # makem nodes
+
+        nodes_list = []
+
+        for plant in list(slice_company.index):
+            g = int(slice_company.get_value(plant,'green_MW')/slice_company.get_value(plant,'MW')*255)
+            b = int(slice_company.get_value(plant,'blue_MW')/slice_company.get_value(plant,'MW')*255)
+            size=np.log10(slice_company.get_value(plant,'MW'))*10
+
+
+            nodes_list.append(
+                (plant,{
+                    'pos': np.random.rand(2),
+                    'type': 'power_station',
+                    'n_color':"#{0:02x}{1:02x}{2:02x}".format(clamp(0), clamp(g), clamp(b)),
+                    'n_alpha':1.0,
+                    'n_size':size
+                    })            
+                )
+
+        #print nodes_list
+
+        # makem edges
+
+        edges_list = []
+
+        pi=0
+
+        for plant1 in list(slice_company.index):
+
+            pi+=1
+
+            for plant2 in list(slice_company.index)[pi:]:
+
+                if plant1 != plant2:
+                    edges_list.append(
+                        (plant1, plant2, {
+                            'weight': 10.0*np.log10(min(slice_company.get_value(plant1,'MW'),slice_company.get_value(plant2,'MW'))),
+                            'type': 'plants',
+                            'e_color': 'gray',
+                            'e_alpha': 1.0
+                        })
+                    )
+
+
+        ### make graph diagram
+
+        G = nx.Graph()
+
+        G.add_nodes_from(nodes_list)
+        G.add_edges_from(edges_list)
+
+        if len(edges_list)>0:
+            max_weight= max([e[2]['weight'] for e in edges_list])
+        else:
+            max_weight=1
+
+
+
+
+
+        #print nx.get_edge_attributes(G,'e_color')
+
+        pos = nx.get_node_attributes(G,'pos')
+        #print pos
+
+        pos = nx.spring_layout(G, k=max_weight/8.0, iterations=10, pos=pos, center=[0,0], weight='weight')#fixed=fixed_nodes, 
+
+
+        ### Draw Edges
+        nx.draw_networkx_edges(G,
+                                   pos,
+                                   edgelist =G.edges(),
+                                   ax=axs[jj,ii],
+                                   edge_color=[nx.get_edge_attributes(G,'e_color')[e] for e in G.edges()],
+                                   alpha=0.2
+                                  )
+
+        ### Draw Nodes
+        nodes_ax = nx.draw_networkx_nodes(G,
+                                              pos,
+                                              ax=axs[jj,ii],
+                                              nodelist=G.nodes(),
+                                              node_size = [nx.get_node_attributes(G,'n_size')[n]*15 for n in G.nodes()],
+                                              node_color = [nx.get_node_attributes(G,'n_color')[n] for n in G.nodes()],
+                                              alpha= [nx.get_node_attributes(G,'n_alpha')[n] for n in G.nodes()]
+                                              )
+
+
+
+        nodes_ax.set_edgecolor('w')
+
+        #axs[jj,ii].set_title(c)
+
+
+        #axs[jj,ii].axis('off')
+
+        ii+=1
+        if ii==10:
+            ii=0
+            jj+=1
+            
+    for jj in range(axs.shape[0]):
+        for ii in range(axs.shape[1]):
+            axs[jj,ii].axis('off')
+            
+            
+    plt.show()
+
+    return None
+            
+def draw_IADS(df_1yr, N_iad=3):
+    iad_cos = df_1yr[['COMPANY','MW']].groupby('COMPANY').filter(lambda x: x['MW'].count()==N_iad).groupby('COMPANY').sum().sort_values('MW',ascending=False).index.values
+          
+    fig, axs = plt.subplots(1,3,figsize=(16,5), dpi=100)
+    ii=0
+    jj=0
+
+    for c in iad_cos[0:1]:
+        slice_company = df_1yr.loc[df_1yr['COMPANY']==c]
+
+        nodes_list = []
+
+        for plant in list(slice_company.index):
+            size=np.log10(slice_company.get_value(plant,'MW'))*10
+
+            nodes_list.append(
+                (plant,{
+                    'pos': np.random.rand(2),
+                    'type': 'power_station',
+                    'n_color':"#FFFFFF",
+                    'n_alpha':1.0,
+                    'n_size':size
+                    })            
+                )
+
+        edges_list = []
+
+        pi=0
+
+        for plant1 in list(slice_company.index):
+
+            pi+=1
+
+            for plant2 in list(slice_company.index)[pi:]:
+
+                if plant1 != plant2:
+                    edges_list.append(
+                        (plant1, plant2, {
+                            'weight': 10.0*np.log10(min(slice_company.get_value(plant1,'MW'),slice_company.get_value(plant2,'MW'))),
+                            'type': 'plants',
+                            'e_color': 'gray',
+                            'e_alpha': 1.0
+                        })
+                    )
+                    
+        ### make graph diagram
+
+        G = nx.Graph()
+
+        G.add_nodes_from(nodes_list)
+        G.add_edges_from(edges_list)
+
+        if len(edges_list)>0:
+            max_weight= max([e[2]['weight'] for e in edges_list])
+        else:
+            max_weight=1
+
+        pos = nx.get_node_attributes(G,'pos')
+
+        pos = nx.spring_layout(G, k=max_weight/8.0, iterations=10, pos=pos, center=[0,0], weight='weight')#fixed=fixed_nodes, 
+
+
+        ### Draw Edges
+        nx.draw_networkx_edges(G,
+                                   pos,
+                                   edgelist =G.edges(),
+                                   ax=axs[0],
+                                   edge_color=[nx.get_edge_attributes(G,'e_color')[e] for e in G.edges()],
+                                   alpha=0.2
+                                  )
+
+        ### Draw Nodes
+        nodes_ax = nx.draw_networkx_nodes(G,
+                                              pos,
+                                              ax=axs[0],
+                                              nodelist=G.nodes(),
+                                              node_size = [nx.get_node_attributes(G,'n_size')[n]*15 for n in G.nodes()],
+                                              node_color = [nx.get_node_attributes(G,'n_color')[n] for n in G.nodes()],
+                                              alpha= [nx.get_node_attributes(G,'n_alpha')[n] for n in G.nodes()]
+                                              )
+
+
+
+        nodes_ax.set_edgecolor('k')
+        
+        axs[0].axis('off')
+        axs[0].set_ylim([-1.2,1.2])
+        axs[0].set_ylim([-1.2,1.2])
+        axs[1].axis('off')
+        
+        tfig, tax = ternary.figure(ax=axs[1], scale=100.0)
+        tax.boundary(linewidth=2.0)
+        tax.gridlines(color='black', multiple=20)
+        # Remove default Matplotlib Axes
+        tax.clear_matplotlib_ticks()
+        #tax.set_title(str(y)+ ' - '+labels[ii], fontsize=12)
+        tax.left_axis_label("FF", fontsize=12)
+        tax.right_axis_label("BLUE", fontsize=12)
+        tax.bottom_axis_label("GREEN", fontsize=12)
+
+        tax.ticks(axis='lbr', multiple=20, linewidth=1)
+        
+        IADS = (df_1yr[['COMPANY','MW','green_MW', 'blue_MW','ff_MW']]
+                    .groupby('COMPANY').filter(lambda x: x['MW'].count()==N_iad)
+                    .groupby('COMPANY').sum())
+        IADS['green_norm'] = IADS.green_MW / IADS.MW *100.0
+        IADS['blue_norm'] = IADS.blue_MW / IADS.MW * 100.0
+        IADS['ff_norm'] = IADS.ff_MW / IADS.MW * 100.0
+
+        IADS_NORM = IADS.as_matrix(columns=['green_norm','blue_norm','ff_norm'])
+
+        color_IADS = []
+        for ci in range(IADS_NORM.shape[0]):
+            g = int(IADS_NORM[ci,0]/100.*255)
+            b = int(IADS_NORM[ci,1]/100.*255)
+            color_IADS.append("#{0:02x}{1:02x}{2:02x}".format(clamp(0), clamp(g), clamp(b)))
+        n_IADS = len(color_IADS)
+
+        #print DIADS
+        tax.scatter(IADS_NORM, marker='1', s=1000, color=color_IADS)#, label='IADS (N='+str(len(color_IADS))+')')
+
+        box_data = [df_1yr[df_1yr.COMPANY.isin(iad_cos)&df_1yr.green_MW>10**-4].green_MW.values,
+                    df_1yr[df_1yr.COMPANY.isin(iad_cos)&df_1yr.blue_MW>10**-4].blue_MW.values,
+                    df_1yr[df_1yr.COMPANY.isin(iad_cos)&df_1yr.ff_MW>10**-4].ff_MW.values]
+        _patches = axs[2].boxplot(box_data,0,'+', whis=[10.,90.], patch_artist=True, widths=0.8)
+        
+        x_labels = ['N_g = '+str(len(box_data[0])),
+                    'N_b = '+str(len(box_data[1])),
+                    'N_ff = '+str(len(box_data[2])),]
+        
+        
+        axs[2].set_xticklabels(x_labels)
+        axs[2].set_ylabel('MW')
+        
+        
+        color_dict = {
+            0:'#00FF00',
+            1:'#0000FF',
+            2:'#000000',
+        }
+        for pi in range(3):
+            _patches['boxes'][pi].set(facecolor=color_dict[pi])
+            _patches['fliers'][pi].set(markeredgecolor=color_dict[pi])
+
+            
+    plt.show()
+
+    return None
+
+
+
+def draw_full_network(df_1yr, iters=500, k_scale=1.0, weight_scale=1.0):
+
+
+    fig, ax = plt.subplots(1,1,figsize=(16,9), dpi=100)
+    ii=0
+    jj=0
+
+    nodes_list = []
+
+    for plant in list(df_1yr.index):
+        g = int(df_1yr.get_value(plant,'green_MW')/df_1yr.get_value(plant,'MW')*255)
+        b = int(df_1yr.get_value(plant,'blue_MW')/df_1yr.get_value(plant,'MW')*255)
+        size=np.log10(df_1yr.get_value(plant,'MW'))*10
+
+
+        nodes_list.append(
+                (plant,{
+                    'pos': np.random.rand(2),
+                    'type': 'power_station',
+                    'n_color':"#{0:02x}{1:02x}{2:02x}".format(clamp(0), clamp(g), clamp(b)),
+                    'n_alpha':1.0,
+                    'n_size':size
+                    })            
+                )
+
+        #print nodes_list
+
+        # makem edges
+        
+    print 'done nodes'
+
+    edges_list = []
+    
+    
+    all_companies = df_1yr.COMPANY.unique()
+    ii=0
+    print len(all_companies)
+    
+    
+    for c in all_companies:
+        
+        plants = df_1yr[df_1yr.COMPANY==c].index.values
+        pi=0
+        
+        for p1 in plants:
+            
+            for p2 in plants[pi:]:
+                edges_list.append(
+                        (p1, p2, {
+                            'weight': 10.0*np.log10(min(df_1yr.get_value(p1,'MW'),df_1yr.get_value(p2,'MW'))),
+                            'type': 'plants',
+                            'e_color': 'gray',
+                            'e_alpha': 1.0
+                        }))
+                
+        print ii
+        ii+=1
+
+
+
+    ### make graph diagram
+
+    G = nx.Graph()
+
+    G.add_nodes_from(nodes_list)
+    G.add_edges_from(edges_list)
+
+    if len(edges_list)>0:
+        max_weight= max([e[2]['weight'] for e in edges_list])
+    else:
+        max_weight=1
+
+
+
+
+
+    #print nx.get_edge_attributes(G,'e_color')
+
+    pos = nx.get_node_attributes(G,'pos')
+    #print pos
+
+    pos = nx.spring_layout(G, k=max_weight/8.0*k_scale, iterations=iters, pos=pos, center=[0,0], weight=weight_scale)#'weight')#fixed=fixed_nodes, 
+
+
+    ### Draw Edges
+    nx.draw_networkx_edges(G,
+                        pos,
+                        edgelist =G.edges(),
+                        ax=ax,
+                        edge_color=[nx.get_edge_attributes(G,'e_color')[e] for e in G.edges()],
+                        alpha=0.2
+                        )
+
+    ### Draw Nodes
+    nodes_ax = nx.draw_networkx_nodes(G,
+                                pos,
+                                ax=ax,
+                                nodelist=G.nodes(),
+                                node_size = [nx.get_node_attributes(G,'n_size')[n]*15 for n in G.nodes()],
+                                node_color = [nx.get_node_attributes(G,'n_color')[n] for n in G.nodes()],
+                                alpha= [nx.get_node_attributes(G,'n_alpha')[n] for n in G.nodes()]
+                                )
+
+
+
+    nodes_ax.set_edgecolor('w')
+
+    ax.set_title('All Companies')
+
+
+    ax.axis('off')
+
+            
+    plt.show()
+
+    return None
+
+def mse_sim(v1,v2):
+    return 1.0-np.sqrt(np.sum(np.nan_to_num(((v1-v2)/np.amax([v1,v2], axis=0))**2))/4.)
+
+def draw_basics(isos, wepp_dfs, years, iso_colors):
+    ### 
+    #n_units, #n_plants, #n_companies, #opr MW, %green_n, %blue, %ff, %MW_g/b/ff
+    
+    fig, axs = plt.subplots(3,3,figsize=(16,15))
+    for iso in isos:
+        n_units = [len(wepp_dfs[y][wepp_dfs[y].ISO==iso]) for y in years]
+        n_plants = [len(wepp_dfs[y][wepp_dfs[y].ISO==iso].groupby('PLANT')) for y in years]
+        n_companies = [len(wepp_dfs[y][wepp_dfs[y].ISO==iso].groupby('COMPANY')) for y in years]
+        N_tot =dict(zip(years,[(wepp_dfs[y][wepp_dfs[y].ISO==iso].MW>10**-4).sum() for y in years]))
+        green_n = [(wepp_dfs[y][wepp_dfs[y].ISO==iso].green_MW>10**-4).sum()/float(N_tot[y]) for y in years]
+        blue_n = [(wepp_dfs[y][wepp_dfs[y].ISO==iso].blue_MW>10**-4).sum()/float(N_tot[y]) for y in years]
+        ff_n = [(wepp_dfs[y][wepp_dfs[y].ISO==iso].ff_MW>10**-4).sum()/float(N_tot[y]) for y in years]
+        MW_tot = dict(zip(years,[wepp_dfs[y][wepp_dfs[y].ISO==iso].MW.sum() for y in years]))
+        green_MW = [wepp_dfs[y][wepp_dfs[y].ISO==iso].green_MW.sum()/MW_tot[y] for y in years]
+        blue_MW = [wepp_dfs[y][wepp_dfs[y].ISO==iso].blue_MW.sum()/MW_tot[y] for y in years]
+        ff_MW = [wepp_dfs[y][wepp_dfs[y].ISO==iso].ff_MW.sum()/MW_tot[y] for y in years]
+        axs[0,0].plot(years, n_units, color=iso_colors[iso])
+        axs[0,1].plot(years, n_plants, color=iso_colors[iso])
+        axs[0,2].plot(years, n_companies, color=iso_colors[iso])
+        axs[0,0].set_yscale("log", nonposy='clip')
+        axs[0,1].set_yscale("log", nonposy='clip')
+        axs[0,2].set_yscale("log", nonposy='clip')
+        
+        axs[1,0].plot(years, green_n, color=iso_colors[iso])
+        axs[1,1].plot(years, blue_n, color=iso_colors[iso])
+        axs[1,2].plot(years, ff_n, color=iso_colors[iso])
+        axs[2,0].plot(years, green_MW, color=iso_colors[iso])
+        axs[2,1].plot(years, blue_MW, color=iso_colors[iso])
+        axs[2,2].plot(years, ff_MW, color=iso_colors[iso])
+        
+        axs[0,0].set_title('n_units')
+        axs[0,1].set_title('n_plant')
+        axs[0,2].set_title('n_companies')
+        axs[1,0].set_title('units % green')
+        axs[1,1].set_title('units % blue')
+        axs[1,2].set_title('units % ff')
+        axs[2,0].set_title('MW % green')
+        axs[2,1].set_title('MW % blue')
+        axs[2,2].set_title('MW % ff')
+        
+    custom_lines = [Line2D([0], [0], color=iso_colors[iso], lw=4, label=iso) for iso in isos]
+    
+    fig.legend(custom_lines,isos,loc='lower center', ncol=len(isos))
+        
+    plt.show()
+
+def draw_top_companies(df_1yr, MW=False, N=10, co_list=None):
+    
+    if co_list is not None:
+        top_cos = co_list
+        N = len(co_list)
+    else:    
+        if MW:
+            top_cos = df_1yr[['COMPANY','MW']].groupby('COMPANY').sum().sort_values('MW', ascending=False).index.values[0:N]
+        
+        else:
+            top_cos = df_1yr[['COMPANY','MW']].groupby('COMPANY').count().sort_values('MW', ascending=False).index.values[0:N]
+    
+
+    fig, axs = plt.subplots(int(math.ceil(N/5.)),5,figsize=(16,int(math.ceil(N/5.))*4 ), dpi=100)
+    
+    #print 'axs shape',axs.shape
+    
+    if len(axs.shape)==1:
+        axs = axs.reshape(-1,5)
+    #print 'axs shape',axs.shape, len(top_cos),axs
+    ii=0
+    jj=0
+
+    for c in top_cos:
+        slice_company = df_1yr.loc[df_1yr['COMPANY']==c]
+        #print slice_company
+
+        # makem nodes
+
+        nodes_list = []
+
+        for plant in list(slice_company.index):
+            g = int(slice_company.get_value(plant,'green_MW')/slice_company.get_value(plant,'MW')*255)
+            b = int(slice_company.get_value(plant,'blue_MW')/slice_company.get_value(plant,'MW')*255)
+            size=np.log10(slice_company.get_value(plant,'MW'))*10
+
+
+            nodes_list.append(
+                (plant,{
+                    'pos': np.random.rand(2),
+                    'type': 'power_station',
+                    'n_color':"#{0:02x}{1:02x}{2:02x}".format(clamp(0), clamp(g), clamp(b)),
+                    'n_alpha':1.0,
+                    'n_size':size
+                    })            
+                )
+            
+
+        #print nodes_list
+
+        # makem edges
+
+        edges_list = []
+
+        pi=0
+
+        for plant1 in list(slice_company.index):
+
+            pi+=1
+
+            for plant2 in list(slice_company.index)[pi:]:
+
+                if plant1 != plant2:
+                    edges_list.append(
+                        (plant1, plant2, {
+                            'weight': 10.0*np.log10(min(slice_company.get_value(plant1,'MW'),slice_company.get_value(plant2,'MW'))),
+                            'type': 'plants',
+                            'e_color': 'gray',
+                            'e_alpha': 1.0
+                        })
+                    )
+                    
+        
+
+
+        ### make graph diagram
+
+        G = nx.Graph()
+
+        G.add_nodes_from(nodes_list)
+        G.add_edges_from(edges_list)
+
+        if len(edges_list)>0:
+            max_weight= max([e[2]['weight'] for e in edges_list])
+        else:
+            max_weight=1
+
+
+        pos = nx.get_node_attributes(G,'pos')
+        #print pos
+        
+
+        pos = nx.spring_layout(G, k=max_weight/8.0, iterations=50, pos=pos, center=[0,0], weight='weight')#fixed=fixed_nodes, 
+            ### Draw Edges
+        nx.draw_networkx_edges(G,
+                               pos,
+                               edgelist =G.edges(),
+                               ax=axs[jj,ii],
+                               edge_color=[nx.get_edge_attributes(G,'e_color')[e] for e in G.edges()],
+                               alpha=0.2
+                              )
+
+        ### Draw Nodes
+        #print 'g nodes', G.nodes()
+
+            
+            
+        nodes_ax = nx.draw_networkx_nodes(G,
+                                          pos,
+                                          ax=axs[jj,ii],
+                                          nodelist=G.nodes(),
+                                          node_size = [nx.get_node_attributes(G,'n_size')[n]*15 for n in G.nodes()],
+                                          node_color = [nx.get_node_attributes(G,'n_color')[n] for n in G.nodes()],
+                                          alpha= [nx.get_node_attributes(G,'n_alpha')[n] for n in G.nodes()]
+                                          )
+        #print nodes_ax
+
+
+
+        nodes_ax.set_edgecolor('w')
+
+        axs[jj,ii].set_title(c)
+
+
+
+        ii+=1
+        if ii==5:
+            ii=0
+            jj+=1
+            
+    for ii in range(int(math.ceil(N/5.))):
+        for jj in range(5):
+            axs[ii,jj].axis('off')
+            
+    plt.show()
+
+    return None
+
+def get_fitness(stats_a, stats_b, years):
+    fitness = []
+    for ii in range(len(years)-1):
+        ii_fitness = 0
+        for k,v in stats_a.iteritems():
+            ii_fitness+= ((stats_b[k][ii]-v[ii]) / float(v[ii]))**2.0
+        fitness.append(ii_fitness)
+    return np.sqrt(np.array(fitness))
+
+def plot_fitness(stats_a, stats_b, years):
+    ff = get_fitness(stats_a, stats_b, years)
+    fig,ax = plt.subplots(1,1, figsize=(6,4))
+    ax.plot(years[1:],ff)
+    ax.set_xticks(years[1:])
+    ax.set_ylabel('Fitness - root sum square error')
+    ax.set_title('Model Fitness')
+    plt.show()
+
+
+def plot_DD_line(iso_slice_meta, select_iso, iso_color):
+    fig,axs = plt.subplots(1,2, figsize=(12,4.5))
+    axs[0].plot(iso_slice_meta[2007].sort_values('COUNT', ascending=False).COUNT.values, color=iso_color, alpha=1.0, label='2007')
+    axs[0].plot(iso_slice_meta[2012].sort_values('COUNT', ascending=False).COUNT.values, color=iso_color, alpha=0.7, label='2012')
+    axs[0].plot(iso_slice_meta[2017].sort_values('COUNT', ascending=False).COUNT.values, color=iso_color, alpha=0.5, label='2017')
+    axs[0].legend(); axs[0].set_xlabel('companies'); axs[0].set_ylabel('Degree - n_plants')
+    axs[1].plot(iso_slice_meta[2007].sort_values('MW', ascending=False).MW.values, color=iso_color, alpha=1.0, label='2007')
+    axs[1].plot(iso_slice_meta[2012].sort_values('MW', ascending=False).MW.values, color=iso_color, alpha=0.7, label='2012')
+    axs[1].plot(iso_slice_meta[2017].sort_values('MW', ascending=False).MW.values, color=iso_color, alpha=0.5, label='2017')
+    axs[1].legend(); axs[1].set_xlabel('companies'); axs[1].set_ylabel('Degree - MW')
+    plt.suptitle('Degree Distributions - '+select_iso)
+    plt.show()
+    
+def plot_DD_boxplot(df, label, years, MW = False):
     ### PLOT DEGREE DISTS WITH BOX & WHISK - COUNT
     
     if MW:
@@ -441,71 +1071,47 @@ def plot_DD(iso_slice_plants, null_df, synthetic_df, years, MW = False):
     else:
         cols_list = ['green','blue','ff']
 
-    fig, axs = plt.subplots(3,3,figsize=(16,9), sharey=True, sharex=True)
+    fig, axs = plt.subplots(1,3,figsize=(16,5), sharey=True, sharex=True)
 
-    data_true = {}
-    data_synth = {}
-    data_null = {}
+    data_sup = {}
 
-    N_t = {}
-    N_s = {}
-    N_n = {}
+
+    N_sup = {}
+
 
     for c in cols_list:
-        data_true[c] = []
-        data_synth[c] = []
-        data_null[c] = []
+        data_sup[c] = []
+
         for y in years[1:]:
-            df_t = iso_slice_plants[y][['COMPANY',c]].groupby('COMPANY').sum()
-            df_s = synthetic_df[y][['COMPANY',c]].groupby('COMPANY').sum()
-            df_n = null_df[y][['COMPANY',c]].groupby('COMPANY').sum()
-            data_true[c].append(df_t[df_t[c]>10**-4][c].values)
-            data_synth[c].append(df_s[df_s[c]>10**-4][c].values)
-            data_null[c].append(df_n[df_n[c]>10**-4][c].values)  #companies with positive counts for those assets
+            df_t = df[y][['COMPANY',c]].groupby('COMPANY').sum()
+
+            data_sup[c].append(df_t[df_t[c]>10**-4][c].values)  #companies with positive counts for those assets
 
     for c in cols_list:
         #%companies that have that don't have that color asset
-        N_t[c] = [(1.0 - (float(ii)/jj)) for ii,jj in zip([len(qq) for qq in data_true[c]],[len(iso_slice_plants[y][['COMPANY',c]].groupby('COMPANY').sum()) for y in years[1:]])]
-        N_s[c] = [(1.0 - (float(ii)/jj)) for ii,jj in zip([len(qq) for qq in data_synth[c]],[len(synthetic_df[y][['COMPANY',c]].groupby('COMPANY').sum()) for y in years[1:]])]
-        N_n[c] = [(1.0 - (float(ii)/jj)) for ii,jj in zip([len(qq) for qq in data_null[c]],[len(null_df[y][['COMPANY',c]].groupby('COMPANY').sum()) for y in years[1:]])]
+        N_sup[c] = [(1.0 - (float(ii)/jj)) for ii,jj in zip([len(qq) for qq in data_sup[c]],[len(df[y][['COMPANY',c]].groupby('COMPANY').sum()) for y in years[1:]])]
+
+    _patches = {}
 
 
-    t_patches = {}
-    s_patches = {}
-    n_patches = {}
-
-    t_patches['green'] = axs[0,0].boxplot(data_true[cols_list[0]],0,'g+', whis=[2.5,97.5], patch_artist=True, widths=0.8)
-    t_patches['blue'] = axs[0,1].boxplot(data_true[cols_list[1]],0,'b+', whis=[2.5,97.5],patch_artist=True, widths=0.8)
-    t_patches['black'] = axs[0,2].boxplot(data_true[cols_list[2]],0,'k+', whis=[2.5,97.5], patch_artist=True, widths=0.8)
-    axs[0,0].set_yscale("log", nonposy='clip')
-    
+    _patches['green'] = axs[0].boxplot(data_sup[cols_list[0]],0,'g+', whis=[2.5,97.5], patch_artist=True, widths=0.8)
+    _patches['blue'] = axs[1].boxplot(data_sup[cols_list[1]],0,'b+', whis=[2.5,97.5],patch_artist=True, widths=0.8)
+    _patches['black'] = axs[2].boxplot(data_sup[cols_list[2]],0,'k+', whis=[2.5,97.5], patch_artist=True, widths=0.8)
+    axs[0].set_yscale("log", nonposy='clip')
     
 
-    #axs[2,1].set_xticklabels([str(y) for y in years[1:]])
-    #axs[2,2].set_xticklabels([str(y) for y in years[1:]])
-    s_patches['green'] = axs[1,0].boxplot(data_synth[cols_list[0]],0,'g+', whis=[2.5,97.5],patch_artist=True, widths=0.8)
-    s_patches['blue'] = axs[1,1].boxplot(data_synth[cols_list[1]],0,'b+', whis=[2.5,97.5],patch_artist=True, widths=0.8)
-    s_patches['black'] = axs[1,2].boxplot(data_synth[cols_list[2]],0,'k+', whis=[2.5,97.5], patch_artist=True, widths=0.8)
-    
-    n_patches['green'] = axs[2,0].boxplot(data_null[cols_list[0]],0,'g+', whis=[2.5,97.5],patch_artist=True, widths=0.8)
-    n_patches['blue'] = axs[2,1].boxplot(data_null[cols_list[1]],0,'b+', whis=[2.5,97.5],patch_artist=True, widths=0.8)
-    n_patches['black'] = axs[2,2].boxplot(data_null[cols_list[2]],0,'k+', whis=[2.5,97.5], patch_artist=True, widths=0.8)
-    
     if MW:
-        axs[0,0].set_ylim(bottom=10**-4)
-        axs[0,0].set_ylabel('True Degree - MW')
-        axs[1,0].set_ylabel('Synthetic Degree - MW')
-        axs[2,0].set_ylabel('Null Model - MW')
+        axs[0].set_ylim(bottom=10**-4)
+        axs[0].set_ylabel(label)
+
     else:
-        axs[0,0].set_ylim(bottom=10**-0.5, top=10**2)
-        axs[0,0].set_ylabel('True Degree - Count')
-        axs[1,0].set_ylabel('Synthetic Degree - Count')
-        axs[2,0].set_ylabel('Null Model - Count')
+        axs[0].set_ylim(bottom=10**-0.5, top=10**2)
+        axs[0].set_ylabel(label)
     
     
-    axs[2,0].set_xticklabels([y for y in years[1:]])
-    axs[2,1].set_xticklabels([y for y in years[1:]])
-    axs[2,2].set_xticklabels([y for y in years[1:]])
+    axs[0].set_xticklabels([y for y in years[1:]])
+    axs[1].set_xticklabels([y for y in years[1:]])
+    axs[2].set_xticklabels([y for y in years[1:]])
 
 
     cols_dict = {
@@ -515,59 +1121,68 @@ def plot_DD(iso_slice_plants, null_df, synthetic_df, years, MW = False):
     }
     colors = ['green', 'blue', 'black']
     for c in colors:
-        for patch in t_patches[c]['boxes']:
-            patch.set_facecolor(cols_dict[c])
-        
-        for patch in s_patches[c]['boxes']:
-            patch.set_facecolor(cols_dict[c])
-        
-        for patch in n_patches[c]['boxes']:
+        for patch in _patches[c]['boxes']:
             patch.set_facecolor(cols_dict[c])
             
     if MW:
         txt_h = 10**-3.5
+        axs[0].set_ylabel('Degree - MW')
     else:
         txt_h = 10**-0.3
+        axs[0].set_ylabel('Degree - Count')
         
     for ia,c in enumerate(cols_list):
         for iy in range(len(years)-1):
-            axs[0,ia].text(iy+1,txt_h,"{0:.0%}".format(N_t[c][iy]), ha='center')
-            axs[1,ia].text(iy+1,txt_h,"{0:.0%}".format(N_s[c][iy]), ha='center')
-            axs[2,ia].text(iy+1,txt_h,"{0:.0%}".format(N_n[c][iy]), ha='center')
+            axs[ia].text(iy+1,txt_h,"{0:.0%}".format(N_sup[c][iy]), ha='center')
 
         
-    axs[2,0].set_xticklabels([str(y) for y in years[1:]])
+    axs[0].set_xticklabels([str(y) for y in years[1:]])
+    axs[0].set_title('DD for companies with Green Assets')
+    axs[1].set_title('DD for companies with Blue Assets')
+    axs[2].set_title('DD for companies with FF Assets')
+    plt.suptitle(label)
         
-        
-    #axs[1,0].set_yscale("log", nonposy='clip')
-    #axs[1].set_ylim(bottom=10**-3, top=10**4)
-
-    plt.savefig('./figures/growth_model/DD_count_n1b2-log10-eps.png')
     plt.show()
-    return 0
+    return None
+    
+def summarize_iso_slice(iso_slice, iso_slice_meta, iso_slice_plants, years):
+    print '{:>5} {:>7} {:>7} {:>11} {:>12} {:>8} {:>7} {:>5} {:>9} {:>8} {:>6}'.format('year', 'n_units', 'n_plants', 'n_companies', 'total_OPR_MW', '%n_green', '%n_blue', '%n_ff', '%MW_green', '%MW_blue', '%MW_ff')
+    print '----'*24
+
+    for y in years:
+        print '{:>5} {:>7} {:>7} {:>11} {:>12} {:>8} {:>7} {:>5} {:>9} {:>8} {:>6}'.format(
+            y,
+            len(iso_slice[y]),
+            len(iso_slice_plants[y]),
+            len(iso_slice_meta[y]),int(iso_slice_plants[y].MW.sum()), 
+            int(iso_slice_plants[y].green.sum()),int(iso_slice_plants[y].blue.sum()), int(iso_slice_plants[y].ff.sum()),
+            int(iso_slice_plants[y].green_MW.sum() / iso_slice_plants[y].MW.sum()*100.),
+            int(iso_slice_plants[y].blue_MW.sum() / iso_slice_plants[y].MW.sum()*100.),
+            int(iso_slice_plants[y].ff_MW.sum() / iso_slice_plants[y].MW.sum()*100.)        
+            )
     
     
-def plot_ternary(iso_slice_plants, synthetic_df, null_df):
+def plot_ternary(dfs, labels):
     
     ### DRAW TERNARY - ISOLATES - mean MW., DIADS; TRIADS; TOP 10 x 2 - count, MW, with lines for years
-    fig,axs = plt.subplots(3,3,figsize=(16,16))
-    model_dict = {
-        0:'True Data',
-        1:'Synthetic Model',
-        2:'Null Model'
-    }
+    fig,axs = plt.subplots(len(dfs),3,figsize=(16,len(dfs)*5))
 
 
-    for ii,df in enumerate([iso_slice_plants, synthetic_df, null_df]):
+    for ii,df in enumerate(dfs):
         for jj,y in enumerate([2008,2012,2017]):
-            axs[ii,jj].axis('off')
-            tfig, tax = ternary.figure(ax=axs[ii,jj], scale=100.0)
+            
+            if len(dfs)==1:
+                axs[jj].axis('off')
+                tfig, tax = ternary.figure(ax=axs[jj], scale=100.0)
+            else:
+                axs[ii,jj].axis('off')
+                tfig, tax = ternary.figure(ax=axs[ii,jj], scale=100.0)
 
             tax.boundary(linewidth=2.0)
             tax.gridlines(color='black', multiple=20)
             # Remove default Matplotlib Axes
             tax.clear_matplotlib_ticks()
-            tax.set_title(str(y)+ ' - '+model_dict[ii], fontsize=12)
+            tax.set_title(str(y)+ ' - '+labels[ii], fontsize=12)
             tax.left_axis_label("FF", fontsize=12)
             tax.right_axis_label("BLUE", fontsize=12)
             tax.bottom_axis_label("GREEN", fontsize=12)
@@ -661,7 +1276,7 @@ def plot_ternary(iso_slice_plants, synthetic_df, null_df):
                     Line2D([0], [0], color='gray', lw=0,marker='1'),
                     Line2D([0], [0], color='gray', lw=0,marker='o'),]
         
-            labels = [
+            leg_labels = [
                 'N_isolates = '+str(n_isolates),
                 'N_diads = '+str(n_diads),
                 'N_triads = '+str(n_triads),
@@ -670,11 +1285,210 @@ def plot_ternary(iso_slice_plants, synthetic_df, null_df):
         
         
         
-            tax.legend(custom_markers, labels, loc='upper right')
+            tax.legend(custom_markers, leg_labels, loc='upper right')
         
     plt.show()
     
+def plot_n_clusters(iso_slice_plants, years, thresholds):
     
+    fig,ax = plt.subplots(1,1,figsize=(6,6))
+    
+    for thresh in thresholds:
+        
+        thresh_list = []
+    
+        for y in years:
+
+            k_cluster = iso_slice_plants[y][['COMPANY','MW','green_MW','blue_MW','ff_MW','green','blue','ff']].groupby(['COMPANY']).sum()
+            k_cluster['green_avg'] = iso_slice_plants[y][['COMPANY','green_MW']].groupby(['COMPANY']).mean()
+            k_cluster['blue_avg'] = iso_slice_plants[y][['COMPANY','blue_MW']].groupby(['COMPANY']).mean()
+            k_cluster['ff_avg'] = iso_slice_plants[y][['COMPANY','ff_MW']].groupby(['COMPANY']).mean()
+            k_cluster['tot_avg'] = iso_slice_plants[y][['COMPANY','MW']].groupby(['COMPANY']).mean()
+            k_cluster['tot_count'] = k_cluster[['green','blue','ff']].sum(axis=1)
+            k_cluster.rename(columns={'MW':'tot_MW',
+                                      'green':'green_count',
+                                      'blue':'blue_count',
+                                      'ff':'ff_count',
+                                     }, inplace=True)
+
+
+            k_cluster_std =  s.zscore(k_cluster[list(k_cluster)])
+
+            r_inertia = 0.
+            k=1
+            kmeans = KMeans(n_clusters=k, random_state=0).fit(k_cluster_std)
+
+            while (k<40) and (r_inertia<(1.0-thresh)):
+                k+=1
+                try_kmeans = KMeans(n_clusters=k, random_state=0).fit(k_cluster_std)
+                r_inertia = try_kmeans.inertia_/kmeans.inertia_
+                kmeans = try_kmeans
+
+            
+            thresh_list.append(k-1)
+        
+        ax.plot(years,thresh_list,label=str(thresh))
+        ax.legend(loc='upper right')
+        ax.set_xticks(years)
+        ax.set_ylabel('N_clusters')
+        ax.set_title('Number of K-means clusters')
+        
+    plt.show()
+    
+def get_clusters(iso_slice_plants, years, threshold):
+    cluster_stats = {}
+    cluster_dfs = {}
+
+    for y in years:
+
+        k_cluster = iso_slice_plants[y][['COMPANY','MW','green_MW','blue_MW','ff_MW','green','blue','ff']].groupby(['COMPANY']).sum()
+        k_cluster['green_avg'] = iso_slice_plants[y][['COMPANY','green_MW']].groupby(['COMPANY']).mean()
+        k_cluster['blue_avg'] = iso_slice_plants[y][['COMPANY','blue_MW']].groupby(['COMPANY']).mean()
+        k_cluster['ff_avg'] = iso_slice_plants[y][['COMPANY','ff_MW']].groupby(['COMPANY']).mean()
+        k_cluster['tot_avg'] = iso_slice_plants[y][['COMPANY','MW']].groupby(['COMPANY']).mean()
+        k_cluster['tot_count'] = k_cluster[['green','blue','ff']].sum(axis=1)
+        k_cluster.rename(columns={'MW':'tot_MW',
+                                  'green':'green_count',
+                                  'blue':'blue_count',
+                                  'ff':'ff_count',
+                                 }, inplace=True)
+
+
+        k_cluster_std =  s.zscore(k_cluster[list(k_cluster)])
+
+        r_inertia = 0.
+        k=1
+        kmeans = KMeans(n_clusters=k, random_state=0).fit(k_cluster_std)
+
+        while (k<40) and (r_inertia<(1.0-threshold)):
+            k+=1
+            try_kmeans = KMeans(n_clusters=k, random_state=0).fit(k_cluster_std)
+            r_inertia = try_kmeans.inertia_/kmeans.inertia_
+            kmeans = try_kmeans
+
+
+        kmeans = KMeans(n_clusters=k-1, random_state=0).fit(k_cluster_std)
+        labels = kmeans.labels_
+
+        #Glue back to originaal data
+        k_cluster['clusters'] = labels
+        
+        #print k_cluster
+
+
+        cluster_stats[y] = k_cluster.groupby(['clusters']).mean()
+        cluster_stats[y]['COUNT'] = k_cluster.groupby(['clusters']).count().tot_count
+        #cluster_dfs[y] = k_cluster
+        cluster_dfs[y] = iso_slice_plants[y].merge(pd.DataFrame(k_cluster.clusters), how='left', left_on='COMPANY',right_index=True)
+        #print cluster_dfs[y]
+
+    for y in years:
+        #print cluster_stats[y].sort_values(['COUNT','tot_MW'], ascending=False)#.index.values
+        di = dict(zip(cluster_stats[y].sort_values(['COUNT','tot_MW'], ascending=False).index.values,range(len(cluster_stats[y]))))
+
+        cluster_dfs[y]['clusters'] = cluster_dfs[y].clusters.map(di)
+        
+        company_cluster = cluster_dfs[y][['COMPANY','MW','green_MW','blue_MW','ff_MW','green','blue','ff']].groupby(['COMPANY']).sum()
+        
+        company_cluster['green_avg'] = cluster_dfs[y][['COMPANY','green_MW']].groupby(['COMPANY']).mean()
+        company_cluster['blue_avg'] = cluster_dfs[y][['COMPANY','blue_MW']].groupby(['COMPANY']).mean()
+        company_cluster['ff_avg'] = cluster_dfs[y][['COMPANY','ff_MW']].groupby(['COMPANY']).mean()
+        company_cluster['tot_avg'] = cluster_dfs[y][['COMPANY','MW']].groupby(['COMPANY']).mean()
+        company_cluster['clusters'] = cluster_dfs[y][['COMPANY','clusters']].groupby(['COMPANY']).nth(0)
+        company_cluster['tot_count'] = company_cluster[['green','blue','ff']].sum(axis=1)
+        company_cluster.rename(columns={'MW':'tot_MW',
+                                  'green':'green_count',
+                                  'blue':'blue_count',
+                                  'ff':'ff_count',
+                                 }, inplace=True)
+        cluster_stats[y] = company_cluster.groupby(['clusters']).mean()
+        cluster_stats[y]['COUNT'] = company_cluster.groupby(['clusters']).count().tot_MW
+        
+
+
+        #cluster_stats[y] = cluster_dfs[y].groupby(['clusters']).mean()
+        #cluster_stats[y]['COUNT'] = cluster_dfs[y].groupby(['clusters']).count().MW
+        
+    return cluster_stats, cluster_dfs
+
+def draw_cluster_transitions(cluster_dfs,cluster_stats, years):
+
+    fix,ax = plt.subplots(1,1,figsize=(16,16))
+
+    for y in years[0:-1]:
+        for c in cluster_stats[y].index.values:
+            #print c, len(cluster_dfs[y+1][cluster_dfs[y+1].index.isin(cluster_dfs[y][cluster_dfs[y].clusters==c].index)]), cluster_dfs[y].loc[cluster_dfs[y].clusters==c,'tot_MW'].sum()
+            c_slice = cluster_dfs[y+1][cluster_dfs[y+1].index.isin(cluster_dfs[y][cluster_dfs[y].clusters==c].index)]
+            slice_mat = c_slice.groupby(['clusters']).sum()
+            for ii in slice_mat.index.values:
+                x = [y,y+1]
+                z = [c,ii]
+                #width = 5.*c_slice.groupby(['clusters']).sum().loc[ii,'MW']/cluster_dfs[y].loc[cluster_dfs[y].clusters==c,'MW'].sum()
+                width = np.sqrt(c_slice.groupby(['clusters']).sum().loc[ii,'MW'])/7.#/cluster_dfs[y].loc[cluster_dfs[y].clusters==c,'MW'].sum()
+
+                #print c, ii, width
+                g = int(c_slice.groupby(['clusters']).sum().loc[ii,'green_MW'] / c_slice.groupby(['clusters']).sum().loc[ii,'MW'] * 255.)
+                b = int(c_slice.groupby(['clusters']).sum().loc[ii,'blue_MW'] / c_slice.groupby(['clusters']).sum().loc[ii,'MW'] * 255.)
+                #"#{0:02x}{1:02x}{2:02x}".format(clamp(0), clamp(g), clamp(b))
+                ax.plot(x,z, color="#{0:02x}{1:02x}{2:02x}".format(clamp(0), clamp(g), clamp(b)), linewidth=width, alpha=0.2, zorder=1)
+
+    patches = []        
+    for y in years[0:-1]:
+        for c in cluster_stats[y].index.values:
+
+            #print ~(cluster_dfs[y][cluster_dfs[y].clusters==c].index.isin(cluster_dfs[y+1].index))
+
+            retire_slice = cluster_dfs[y][(cluster_dfs[y].clusters==c) & ~(cluster_dfs[y].index.isin(cluster_dfs[y+1].index))]
+            if len(retire_slice)>0:
+                w_tot = retire_slice.MW.sum()
+                w_green = retire_slice.green_MW.sum()
+                w_blue = retire_slice.blue_MW.sum()
+                w_ff = retire_slice.ff_MW.sum()
+                w_center = (y+0.1,c)
+                #print w_tot
+                w_size = w_tot/8000.
+
+                patches.append(Wedge(w_center,w_size,-90,  -90.+w_ff/w_tot*180,color='black', alpha=1., zorder=2))
+                patches.append(Wedge(w_center,w_size,-90+w_ff/w_tot*180,  -90.+w_ff/w_tot*180+w_blue/w_tot*180,color='#0000ff', alpha=1., zorder=2))
+                patches.append(Wedge(w_center,w_size,-90+w_ff/w_tot*180+w_blue/w_tot*180,  -90.+w_blue/w_tot*180+w_green/w_tot*180+w_ff/w_tot*180,color='#00ff00', alpha=1.,zorder=2))
+
+            if y>years[0]:
+                birth_slice = cluster_dfs[y][(cluster_dfs[y].clusters==c) & ~(cluster_dfs[y].index.isin(cluster_dfs[y-1].index))]
+                if len(birth_slice)>0:
+                    w_tot = birth_slice.MW.sum()
+                    w_green = birth_slice.green_MW.sum()
+                    w_blue = birth_slice.blue_MW.sum()
+                    w_ff = birth_slice.ff_MW.sum()
+                    w_center = (y-0.1,c)
+                    #print w_tot
+                    w_size = w_tot/8000.
+
+                    patches.append(Wedge(w_center,w_size,90,  90.+w_ff/w_tot*180,color='black', alpha=1.,zorder=2))
+                    patches.append(Wedge(w_center,w_size,90+w_ff/w_tot*180,  90.+w_ff/w_tot*180+w_blue/w_tot*180,color='#0000ff', alpha=1.,zorder=2))
+                    patches.append(Wedge(w_center,w_size,90+w_ff/w_tot*180+w_blue/w_tot*180,  90.+w_blue/w_tot*180+w_green/w_tot*180+w_ff/w_tot*180,color='#00ff00', alpha=1.,zorder=2))
+
+    patches.append(Wedge((2015.6,15),0.5,-90,  -30.,color='black', alpha=1.))
+    patches.append(Wedge((2015.6,15),0.5,-30,  30.,color='#0000ff', alpha=1.))
+    patches.append(Wedge((2015.6,15),0.5,30,  90.,color='#00ff00', alpha=1.))
+
+
+    patches.append(Wedge((2015.4,15),0.5,90,  150.,color='black', alpha=1.))
+    patches.append(Wedge((2015.4,15),0.5,150,  210,color='#0000ff', alpha=1.))
+    patches.append(Wedge((2015.4,15),0.5,210,  270,color='#00ff00', alpha=1.))
+
+    ax.text(2015.4,16,'Births', horizontalalignment='right')
+    ax.text(2015.6,16,'Retirements')
+
+    P = PatchCollection(patches, match_original=True)
+
+    ax.add_collection(P)
+    ax.set_xticks(years)
+    ax.set_ylabel('Clusters')
+
+    plt.show()
+
+
+
 def random_choice_prob_index(a, axis=1):
     r = np.expand_dims(np.random.rand(a.shape[1-axis]), axis=axis)
     return (a.cumsum(axis=axis) > r).argmax(axis=axis)
