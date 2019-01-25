@@ -892,6 +892,117 @@ def draw_basics(isos, wepp_dfs, years, iso_colors):
     fig.legend(custom_lines,isos,loc='lower center', ncol=len(isos))
         
     plt.show()
+    
+def draw_basics_iso(iso_slice, years):
+    
+    #get all companies
+    #for company in companies...
+    
+    all_cos = []
+    
+    n_cos = []
+
+    
+    for y in years:
+
+        n_cos.append((y,len(iso_slice[y].COMPANY.unique())))
+        all_cos = np.concatenate([all_cos,iso_slice[y].COMPANY.unique()])
+        
+    all_cos = list(np.unique(all_cos))
+
+    n_units = []
+    n_plants = []
+    units_per_g = []
+    units_per_b = []
+    units_per_ff = []
+    MW_per_g = []
+    MW_per_b = []
+    MW_per_ff = []
+    
+    fig, axs = plt.subplots(3,3,figsize=(16,15))
+    
+    
+    for c in all_cos:
+        #print (c)
+        #print ('n_ len',len(iso_slice[2017][iso_slice[2017].COMPANY==c]))
+        #print 't/f sum',(iso_slice[2017].COMPANY==c).sum()
+        n_units.append([(y,(iso_slice[y].COMPANY==c).sum()) for y in years if (iso_slice[y].COMPANY==c).sum()>0])
+        n_plants.append([(y,len(iso_slice[y][iso_slice[y].COMPANY==c].PLANT.unique())) for y in years if (iso_slice[y].COMPANY==c).sum()>0])
+        units_tot = [(y,(iso_slice[y][iso_slice[y].COMPANY==c].MW>10**-4).sum()) for y in years if (iso_slice[y].COMPANY==c).sum()>0]
+        units_g = [(y,(iso_slice[y][iso_slice[y].COMPANY==c].green_MW>10**-4).sum()) for y in years if (iso_slice[y].COMPANY==c).sum()>0]
+        units_b = [(y,(iso_slice[y][iso_slice[y].COMPANY==c].blue_MW>10**-4).sum()) for y in years if (iso_slice[y].COMPANY==c).sum()>0]
+        units_f = [(y,(iso_slice[y][iso_slice[y].COMPANY==c].ff_MW>10**-4).sum()) for y in years if (iso_slice[y].COMPANY==c).sum()>0]
+        
+        MW_tot = [(y,iso_slice[y][iso_slice[y].COMPANY==c].MW.sum()) for y in years if (iso_slice[y].COMPANY==c).sum()>0]
+        MW_g = [(y,iso_slice[y][iso_slice[y].COMPANY==c].green_MW.sum()) for y in years if (iso_slice[y].COMPANY==c).sum()>0]
+        MW_b = [(y,iso_slice[y][iso_slice[y].COMPANY==c].blue_MW.sum()) for y in years if (iso_slice[y].COMPANY==c).sum()>0]
+        MW_f = [(y,iso_slice[y][iso_slice[y].COMPANY==c].ff_MW.sum()) for y in years if (iso_slice[y].COMPANY==c).sum()>0]
+       
+        #print units_g
+        #print units_b
+        #print units_f
+        #print units_tot
+        #print 'units_per_g',[(tt[0],float(tt[1])/units_tot[ii][1]) for ii,tt in enumerate(units_g)]
+        units_per_g.append([(tt[0],float(tt[1])/units_tot[ii][1]) for ii,tt in enumerate(units_g)])
+        units_per_b.append([(tt[0],float(tt[1])/units_tot[ii][1]) for ii,tt in enumerate(units_b)])
+        units_per_ff.append([(tt[0],float(tt[1])/units_tot[ii][1]) for ii,tt in enumerate(units_f)])
+        
+        MW_per_g.append([(tt[0],float(tt[1])/MW_tot[ii][1]) for ii,tt in enumerate(MW_g)])
+        MW_per_b.append([(tt[0],float(tt[1])/MW_tot[ii][1]) for ii,tt in enumerate(MW_b)])
+        MW_per_ff.append([(tt[0],float(tt[1])/MW_tot[ii][1]) for ii,tt in enumerate(MW_f)])
+        
+        #n_units.append([iso_slice[y]. for y in years])
+    #print n_plants
+    
+    cols_dict = {0:'g',1:'b',2:'k'}
+    
+    for ii, units_per in enumerate([units_per_g, units_per_b, units_per_ff]):
+        for unit_p in units_per:
+            axs[1,ii].plot(*zip(*unit_p), color=cols_dict[ii], alpha=0.5)
+
+    for ii, MW_per in enumerate([MW_per_g, MW_per_b, MW_per_ff]):
+        for MW_p in MW_per:
+            axs[2,ii].plot(*zip(*MW_p), color=cols_dict[ii], alpha=0.5)
+            
+    for cc in n_units:
+        axs[0,0].plot(*zip(*cc), color='teal', alpha=0.5)
+        
+    for cc in n_plants:
+        axs[0,1].plot(*zip(*cc), color='teal', alpha=0.5)
+    
+    axs[0,2].plot(*zip(*n_cos), color='teal', alpha=0.5)
+    
+    axs[0,0].set_yscale('log')
+    axs[0,1].set_yscale('log')
+    
+    axs[0,0].set_title('n_units')
+    axs[0,1].set_title('n_plant')
+    axs[0,2].set_title('n_companies')
+    axs[1,0].set_title('units % green')
+    axs[1,1].set_title('units % blue')
+    axs[1,2].set_title('units % ff')
+    axs[2,0].set_title('MW % green')
+    axs[2,1].set_title('MW % blue')
+    axs[2,2].set_title('MW % ff')
+    """   
+    
+        axs[0,0].plot(years, n_units, color=iso_colors[iso])
+        axs[0,1].plot(years, n_plants, color=iso_colors[iso])
+        axs[0,2].plot(years, n_companies, color=iso_colors[iso])
+        axs[0,0].set_yscale("log", nonposy='clip')
+        axs[0,1].set_yscale("log", nonposy='clip')
+        axs[0,2].set_yscale("log", nonposy='clip')
+        
+
+        
+
+        
+    custom_lines = [Line2D([0], [0], color=iso_colors[iso], lw=4, label=iso) for iso in isos]
+    
+    fig.legend(custom_lines,isos,loc='lower center', ncol=len(isos))
+    """
+        
+    plt.show()
 
 def draw_top_companies(df_1yr, MW=False, N=10, co_list=None):
     
@@ -1030,6 +1141,141 @@ def draw_top_companies(df_1yr, MW=False, N=10, co_list=None):
     plt.show()
 
     return None
+
+def draw_retirements_births(iso_slice, years):
+
+        
+    retirement_units = {}
+    birth_units = {}
+    for y in years[1:]:
+        units_t_y = iso_slice[y].UNIT.values
+        units_t_ym1 = iso_slice[y-1].UNIT.values
+        retiring_units = []
+        born_units = []
+        
+        for u in units_t_ym1:
+            if u not in units_t_y:
+                retiring_units.append(u)
+                
+        for u in units_t_y:
+            if u not in units_t_ym1:
+                born_units.append(u)
+        birth_units[y] = born_units
+        retirement_units[y] = retiring_units
+        
+        
+    
+    fig, axs = plt.subplots(1,1,figsize=(24,8))
+    
+    bins = [0.,0.1,1.,10.,50.,100.,500.,1000.,10000.]
+    
+    retiring_MW = []
+    born_MW = []
+    max_MW = {}
+    
+    for y in years[1:]:
+        max_ret = iso_slice[y-1][iso_slice[y-1].UNIT.isin(retirement_units[y])].MW.sum()
+        max_born = iso_slice[y][iso_slice[y].UNIT.isin(birth_units[y])].MW.sum()
+        max_MW[y] = max(max_ret, max_born)
+        
+    
+    
+    for y in years[1:]:
+        #print y, max_MW[y]
+        
+        retirement_slice = iso_slice[y-1][iso_slice[y-1].UNIT.isin(retirement_units[y])].sort_values('MW', ascending=False)
+        retirement_slice['cum_MW'] = retirement_slice.MW.cumsum(axis=0)
+        
+        birth_slice = iso_slice[y][iso_slice[y].UNIT.isin(birth_units[y])].sort_values('MW', ascending=False)
+        birth_slice['cum_MW'] = birth_slice.MW.cumsum(axis=0)
+        #print retirement_slice
+        
+        for ii in range(len(retirement_slice)):
+            
+            MW = retirement_slice.iloc[ii].MW
+            g = int(retirement_slice.iloc[ii].green_MW / MW *255.)
+            b = int(retirement_slice.iloc[ii].blue_MW / MW *255.)
+            col = "#{0:02x}{1:02x}{2:02x}".format(clamp(0), clamp(g), clamp(b))
+            if ii>0:
+                y_coord = retirement_slice.iloc[ii-1].cum_MW/retirement_slice.cum_MW.max()
+            else:
+                y_coord=0
+            y_coord = -1.+y_coord
+            width = retirement_slice.iloc[ii].cum_MW/max_MW[y]
+            height = retirement_slice.iloc[ii].MW/retirement_slice.cum_MW.max()
+            left = y
+            #print 'MW', MW, 'col', col, 'y_coord', y_coord,'width',width,'height',height,'left',left
+            axs.barh(y=y_coord, width=width, height=height, left=y, align='edge', color=col)
+            
+        for ii in range(len(birth_slice)):
+            
+            MW = birth_slice.iloc[ii].MW
+            g = int(birth_slice.iloc[ii].green_MW / MW *255.)
+            b = int(birth_slice.iloc[ii].blue_MW / MW *255.)
+            col = "#{0:02x}{1:02x}{2:02x}".format(clamp(0), clamp(g), clamp(b))
+            if ii>0:
+                y_coord = birth_slice.iloc[ii-1].cum_MW/birth_slice.cum_MW.max()
+            else:
+                y_coord=0
+            y_coord = 1.-y_coord
+            width = birth_slice.iloc[ii].cum_MW/max_MW[y]
+            height =  -1.*birth_slice.iloc[ii].MW/birth_slice.cum_MW.max()
+            left = y
+            #print 'MW', MW, 'col', col, 'y_coord', y_coord,'width',width,'height',height,'left',left
+            axs.barh(y=y_coord, width=width, height=height, left=y, align='edge', color=col)
+            
+    
+            
+            
+        
+        #bins_g = pd.cut(retirement_slice[retirement_slice.green_MW>10**-4].green_MW, bins)
+        #bins_b = pd.cut(retirement_slice[retirement_slice.blue_MW>10**-4].blue_MW, bins)
+        #bins_ff = pd.cut(retirement_slice[retirement_slice.ff_MW>10**-4].ff_MW, bins)
+        
+        #print retirement_slice[retirement_slice.green_MW>10**-4].groupby(bins_g).green_MW.agg(['count', 'sum'])
+        #print retirement_slice[retirement_slice.blue_MW>10**-4].groupby(bins_b).blue_MW.agg(['count', 'sum'])
+        #print retirement_slice[retirement_slice.ff_MW>10**-4].groupby(bins_ff).ff_MW.agg(['count', 'sum'])
+        #g_slice = np.histogram(retirement_slice[retirement_slice.green_MW>10**-4].green_MW.values, bins=bins)
+        #b_slice = np.histogram(retirement_slice[retirement_slice.blue_MW>10**-4].blue_MW.values, bins=bins)
+        #ff_slice = np.histogram(retirement_slice[retirement_slice.ff_MW>10**-4].ff_MW.values, bins=bins)
+        #print bins_g
+        #print bins_b
+        #print (bins_ff)
+        
+        
+        #for u in retirement_units[y][0:10]:
+        #    MW = iso_slice[y-1][iso_slice[y-1].UNIT==u].MW.values
+        #    g = int(iso_slice[y-1][iso_slice[y-1].UNIT==u].green_MW.values / MW *255.)
+        #    b = int(iso_slice[y-1][iso_slice[y-1].UNIT==u].blue_MW.values / MW *255.)
+        #    col = "#{0:02x}{1:02x}{2:02x}".format(clamp(0), clamp(g), clamp(b)),
+        #    print 'MW',MW, 'col', col, g, b
+            
+            
+        #    axs[0].scatter(y, MW,color=col)
+            
+        #for u in birth_units[y][0:10]:
+        #    MW = iso_slice[y][iso_slice[y].UNIT==u].MW.values
+        #    g = int(iso_slice[y][iso_slice[y].UNIT==u].green_MW.values / MW *255.)
+        #    b = int(iso_slice[y][iso_slice[y].UNIT==u].blue_MW.values / MW *255.)
+        #    col = "#{0:02x}{1:02x}{2:02x}".format(clamp(0), clamp(g), clamp(b)),
+        #    print 'MW',MW, 'col', col, g, b
+            
+        #    axs[1].scatter(y,MW,color=col)
+            
+        #for u in retirement_units[y][0:10]:
+        #    print y, iso_slice[y-1][iso_slice[]]
+        
+    axs.hlines(0.0,years[1], years[-1])
+    axs.set_xticks(years[1:])
+    
+    axs.set_ylabel('Retirements            Births', fontsize=24)
+    
+    
+    
+    #print retirement_units
+    #print birth_units
+    
+    plt.show()
 
 def get_fitness(stats_a, stats_b, years):
     fitness = []
