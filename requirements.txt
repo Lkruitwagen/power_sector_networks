@@ -80,7 +80,7 @@ psycopg2==2.7.3.2
 ptyprocess==0.5.2
 pycountry==17.9.23
 pycparser==2.18
-Pygments==2.2.0
+Pygments==2.7.4
 pyOpenSSL==17.5.0
 pyparsing==2.2.0
 pyshp==1.2.12
